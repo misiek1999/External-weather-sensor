@@ -1,0 +1,25 @@
+#include <dt-bindings/gpio/gpio.h>
+
+&uart0 {
+    status = "okay";
+    /delete-property/ hw-flow-control;
+};
+
+&i2c0 {
+    status = "okay";
+    clock-frequency = <400000>;
+
+    sda-pin = <17>;
+    scl-pin = <20>;
+
+    aht10: aht10@38 {
+        compatible = "aosong,aht10";
+        reg = <0x38>;
+    };
+};
+
+/ {
+    zephyr,user {
+        sensor-pwr-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+    };
+};
