@@ -116,6 +116,25 @@ static void print_fixed(const char *label, int32_t centi, const char *unit)
     printk("%s: %d.%02d %s\n", label, whole, frac, unit);
 }
 
+/*
+ * Sleep until the next multiple of slot_ms of k_uptime_get(). Anchoring the
+ * sleep to absolute time keeps the broadcast schedule on a fixed 5-minute
+ * grid; a plain k_sleep() would make every cycle last 5 minutes plus the
+ * wake-up work time and the schedule would drift further away each cycle.
+ */
+static void sleep_to_slot(uint32_t slot_ms)
+{
+    const int64_t now_ms = k_uptime_get();
+    const int64_t next_ms = ((now_ms / slot_ms) + 1) * slot_ms;
+    const int32_t remaining_ms = (int32_t)(next_ms - now_ms);
+
+    if (remaining_ms > 0) {
+        k_sleep(K_MSEC(remaining_ms));
+    } else {
+        printk("Warning: sleep_to_slot() called too late, remaining_ms=%d\n", remaining_ms);
+    }
+}
+
 static void broadcast_weather_data(int32_t temp_centi, int32_t hum_centi, uint16_t battery_mv)
 {
     int err;
@@ -216,11 +235,11 @@ int main(void)
         /* 5. Broadcast data over BLE (connectionless advertising) */
         broadcast_weather_data(temp_centi, hum_centi, battery_mv);
 
-        /* 6. Sleep for another 5 minutes with the console suspended,
+        /* 6. Sleep until the next 5-minute slot with the console suspended,
          *    so the SoC can reach its lowest idle current */
         printk("Sleep for %d minutes\n", SLEEP_TIME_MS / 60000);
         uart_suspend();
-        k_sleep(K_MSEC(SLEEP_TIME_MS));
+        sleep_to_slot(SLEEP_TIME_MS);
         uart_resume();
     }
 
