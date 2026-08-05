@@ -16,8 +16,17 @@
 
 /* ---------- Timing configuration ---------- */
 #define SLEEP_TIME_MS     (5 * 60 * 1000)  /* 5 minutes */
-#define ADV_DURATION_MS   500  /* temporary: longer window so the scanner catches it; revert to ~1000 */
-#define SENSOR_WARMUP_MS  200
+#define ADV_DURATION_MS   1200
+#define SENSOR_WARMUP_MS  150
+#define ADV_INT_MIN_UNITS 160   /* 100 ms */
+#define ADV_INT_MAX_UNITS 240   /* 150 ms */
+#define BATT_SAMPLE_EVERY_CYCLES 6
+
+#if defined(CONFIG_PRINTK) && CONFIG_PRINTK
+#define APP_LOG(...) printk(__VA_ARGS__)
+#else
+#define APP_LOG(...)
+#endif
 
 /* ---------- Sensor power pin (VCC) ---------- */
 static const struct gpio_dt_spec sensor_pwr =
@@ -58,6 +67,12 @@ static const struct bt_data ad[] = {
     BT_DATA(BT_DATA_MANUFACTURER_DATA, mfg_data, sizeof(mfg_data)),
 };
 
+static const struct bt_le_adv_param *adv_params = BT_LE_ADV_PARAM(
+    BT_LE_ADV_OPT_USE_IDENTITY,
+    ADV_INT_MIN_UNITS,
+    ADV_INT_MAX_UNITS,
+    NULL);
+
 /* ---------- Console UART power management ---------- */
 /*
  * The console UART keeps the UARTE peripheral active (and with it the
@@ -65,6 +80,7 @@ static const struct bt_data ad[] = {
  * device sleeps. Suspend it explicitly for the duration of the long sleep
  * and resume it before any further printk() calls.
  */
+#if defined(CONFIG_UART_CONSOLE) && CONFIG_UART_CONSOLE
 static const struct device *uart_dev = DEVICE_DT_GET(DT_NODELABEL(uart0));
 
 static void uart_suspend(void)
@@ -72,7 +88,7 @@ static void uart_suspend(void)
     int err = pm_device_state_set(uart_dev, PM_DEVICE_STATE_SUSPENDED);
 
     if (err < 0 && err != -EALREADY) {
-        printk("Failed to suspend console UART (err %d)\n", err);
+        APP_LOG("Failed to suspend console UART (err %d)\n", err);
     }
 }
 
@@ -81,9 +97,18 @@ static void uart_resume(void)
     int err = pm_device_state_set(uart_dev, PM_DEVICE_STATE_ACTIVE);
 
     if (err < 0 && err != -EALREADY) {
-        printk("Failed to resume console UART (err %d)\n", err);
+        APP_LOG("Failed to resume console UART (err %d)\n", err);
     }
 }
+#else
+static void uart_suspend(void)
+{
+}
+
+static void uart_resume(void)
+{
+}
+#endif
 
 static uint16_t read_battery_mv(void)
 {
@@ -91,7 +116,7 @@ static uint16_t read_battery_mv(void)
     int err = adc_read(adc_dev, &sequence);
 
     if (err) {
-        printk("ADC read error: %d\n", err);
+        APP_LOG("ADC read error: %d\n", err);
         return 0;
     }
 
@@ -113,7 +138,7 @@ static void print_fixed(const char *label, int32_t centi, const char *unit)
         frac = -frac;
     }
 
-    printk("%s: %d.%02d %s\n", label, whole, frac, unit);
+    APP_LOG("%s: %d.%02d %s\n", label, whole, frac, unit);
 }
 
 /*
@@ -131,19 +156,21 @@ static void sleep_to_slot(uint32_t slot_ms)
     if (remaining_ms > 0) {
         k_sleep(K_MSEC(remaining_ms));
     } else {
-        printk("Warning: sleep_to_slot() called too late, remaining_ms=%d\n", remaining_ms);
+        APP_LOG("Warning: sleep_to_slot() called too late, remaining_ms=%d\n", remaining_ms);
     }
 }
 
-static void broadcast_weather_data(int32_t temp_centi, int32_t hum_centi, uint16_t battery_mv)
+static void broadcast_weather_data(uint8_t flags, int32_t temp_centi, int32_t hum_centi,
+                                   uint16_t battery_mv, uint16_t sequence)
 {
     int err;
 
-    weather_ble_encode(mfg_data, (int16_t)temp_centi, (uint16_t)hum_centi, battery_mv);
+    weather_ble_encode(mfg_data, flags, (int16_t)temp_centi, (uint16_t)hum_centi, battery_mv,
+                       sequence);
 
-    err = bt_le_adv_start(BT_LE_ADV_NCONN, ad, ARRAY_SIZE(ad), NULL, 0);
+    err = bt_le_adv_start(adv_params, ad, ARRAY_SIZE(ad), NULL, 0);
     if (err) {
-        printk("Unable to start BLE advertising (err %d)\n", err);
+        APP_LOG("Unable to start BLE advertising (err %d)\n", err);
         return;
     }
 
@@ -151,7 +178,7 @@ static void broadcast_weather_data(int32_t temp_centi, int32_t hum_centi, uint16
 
     err = bt_le_adv_stop();
     if (err) {
-        printk("Unable to stop BLE advertising (err %d)\n", err);
+        APP_LOG("Unable to stop BLE advertising (err %d)\n", err);
     }
 }
 
@@ -160,50 +187,55 @@ int main(void)
 {
     int err;
 
-    printk("\n=== External weather station start ===\n");
+    APP_LOG("\n=== External weather station start ===\n");
 
     if (!device_is_ready(sensor_pwr.port)) {
-        printk("Power control pin not ready!\n");
-        return;
+        APP_LOG("Power control pin not ready!\n");
+        return -ENODEV;
     }
     gpio_pin_configure_dt(&sensor_pwr, GPIO_OUTPUT_INACTIVE);
 
     if (!device_is_ready(aht10.bus)) {
-        printk("I2C bus for AHT10 not ready!\n");
-        return;
+        APP_LOG("I2C bus for AHT10 not ready!\n");
+        return -ENODEV;
     }
 
     if (!device_is_ready(adc_dev)) {
-        printk("ADC not ready!\n");
-        return;
+        APP_LOG("ADC not ready!\n");
+        return -ENODEV;
     }
 
     err = adc_channel_setup(adc_dev, &batt_channel_cfg);
     if (err) {
-        printk("ADC channel setup error: %d\n", err);
-        return;
+        APP_LOG("ADC channel setup error: %d\n", err);
+        return err;
     }
 
     err = bt_enable(NULL);
     if (err) {
-        printk("Bluetooth initialization error (err %d)\n", err);
-        return;
+        APP_LOG("Bluetooth initialization error (err %d)\n", err);
+        return err;
     }
-    printk("Bluetooth initialized\n");
+    APP_LOG("Bluetooth initialized\n");
 
     bt_addr_le_t addr;
     size_t addr_count = 1;
     char addr_str[BT_ADDR_LE_STR_LEN];
+    uint16_t sample_sequence = 0;
 
     bt_id_get(&addr, &addr_count);
     if (addr_count > 0) {
         bt_addr_le_to_str(&addr, addr_str, sizeof(addr_str));
-        printk("BLE MAC: %s\n", addr_str);
+        APP_LOG("BLE MAC: %s\n", addr_str);
     }
+
+    uint16_t last_battery_mv = 0;
+    uint32_t cycle_idx = 0;
 
     while (1) {
         int32_t  temp_centi = 0;
         int32_t  hum_centi  = 0;
+        uint8_t  payload_flags = 0;
         uint16_t battery_mv;
 
         /* 1. Power up the sensor */
@@ -214,12 +246,13 @@ int main(void)
          *    every time because we completely cut its power supply */
         int ret = aht10_init(&aht10);
         if (ret != 0) {
-            printk("AHT10 init error: %d\n", ret);
+            APP_LOG("AHT10 init error: %d\n", ret);
         } else {
             ret = aht10_read(&aht10, &temp_centi, &hum_centi);
             if (ret != 0) {
-                printk("AHT10 read error: %d\n", ret);
+                APP_LOG("AHT10 read error: %d\n", ret);
             } else {
+                payload_flags |= WEATHER_BLE_FLAG_SENSOR_OK;
                 print_fixed("Temp", temp_centi, "C");
                 print_fixed("Humidity", hum_centi, "%");
             }
@@ -229,18 +262,24 @@ int main(void)
         gpio_pin_set_dt(&sensor_pwr, 0);
 
         /* 4. Battery voltage */
-        battery_mv = read_battery_mv();
-        printk("Battery voltage: %u mV\n", battery_mv);
+        if ((cycle_idx % BATT_SAMPLE_EVERY_CYCLES) == 0 || last_battery_mv == 0) {
+            last_battery_mv = read_battery_mv();
+        }
+        battery_mv = last_battery_mv;
+        APP_LOG("Battery voltage: %u mV\n", battery_mv);
 
         /* 5. Broadcast data over BLE (connectionless advertising) */
-        broadcast_weather_data(temp_centi, hum_centi, battery_mv);
+        broadcast_weather_data(payload_flags, temp_centi, hum_centi, battery_mv, sample_sequence);
 
         /* 6. Sleep until the next 5-minute slot with the console suspended,
          *    so the SoC can reach its lowest idle current */
-        printk("Sleep for %d minutes\n", SLEEP_TIME_MS / 60000);
+        APP_LOG("Sleep for %d minutes\n", SLEEP_TIME_MS / 60000);
         uart_suspend();
         sleep_to_slot(SLEEP_TIME_MS);
         uart_resume();
+
+        cycle_idx++;
+        sample_sequence++;
     }
 
     return 0;
