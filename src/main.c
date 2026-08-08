@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <bluetooth/bluetooth.h>
 #include <hal/nrf_saadc.h>
+#include <hal/nrf_power.h>
 
 #include "aht10.h"
 #include "weather_proto.h"
@@ -24,6 +25,10 @@
 #define ADV_INT_MIN_UNITS 160   /* 100 ms */
 #define ADV_INT_MAX_UNITS 240   /* 150 ms */
 #define BATT_SAMPLE_EVERY_CYCLES 6
+
+#if defined(LOW_BATTERY_SHUTDOWN)
+#define BATT_18650_CRITICAL_MV 3000
+#endif
 
 /* ---------- Sensor power pin (VCC) ---------- */
 static const struct gpio_dt_spec sensor_pwr =
@@ -179,6 +184,36 @@ static void broadcast_weather_data(uint8_t flags, int32_t temp_centi, int32_t hu
     }
 }
 
+#if defined(LOW_BATTERY_SHUTDOWN)
+static void broadcast_critical_battery_and_shutdown(uint16_t battery_mv, uint16_t sequence)
+{
+    int err;
+
+    weather_ble_encode_error(mfg_data, WEATHER_BLE_ERROR_CRITICAL_LOW_BATEERY, battery_mv,
+                             sequence);
+
+    err = bt_le_adv_start(adv_params, ad, ARRAY_SIZE(ad), NULL, 0);
+    if (err) {
+        LOG_E("Unable to start BLE error advertising (err %d)", err);
+    } else {
+        k_sleep(K_MSEC(ADV_DURATION_MS));
+        err = bt_le_adv_stop();
+        if (err) {
+            LOG_E("Unable to stop BLE error advertising (err %d)", err);
+        }
+    }
+
+    uart_suspend();
+    LOG_E("Entering system-off due to critical battery");
+    nrf_power_system_off(NRF_POWER);
+
+    /* Fallback safety net: if the platform refuses system-off, do not continue work. */
+    while (1) {
+        k_sleep(K_FOREVER);
+    }
+}
+#endif
+
 
 int main(void)
 {
@@ -264,6 +299,14 @@ int main(void)
         }
         battery_mv = last_battery_mv;
         LOG_I("Battery voltage: %u mV", battery_mv);
+
+    #if defined(LOW_BATTERY_SHUTDOWN)
+        if (battery_mv > 0 && battery_mv <= BATT_18650_CRITICAL_MV) {
+            LOG_E("Critical 18650 battery level: %u mV <= %u mV", battery_mv,
+              BATT_18650_CRITICAL_MV);
+            broadcast_critical_battery_and_shutdown(battery_mv, sample_sequence);
+        }
+    #endif
 
         /* 5. Broadcast data over BLE (connectionless advertising) */
         broadcast_weather_data(payload_flags, temp_centi, hum_centi, battery_mv, sample_sequence);
