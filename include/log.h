@@ -107,7 +107,7 @@
 
 #if defined(CONFIG_PRINTK) && CONFIG_PRINTK
 
-static uint32_t log_count;
+static uint32_t log_count __attribute__((unused));
 
 extern uint8_t log_runtime_levels[];
 
