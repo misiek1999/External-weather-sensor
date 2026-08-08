@@ -20,7 +20,9 @@
 
 /* ---------- Timing configuration ---------- */
 #define SLEEP_TIME_MS     (5 * 60 * 1000)  /* 5 minutes */
-#define ADV_DURATION_MS   1200
+#define ADV_BURST_DURATION_MS 800
+#define ADV_REPEAT_COUNT      3
+#define ADV_REPEAT_GAP_MS     400
 #define SENSOR_WARMUP_MS  150
 #define ADV_INT_MIN_UNITS 160   /* 100 ms */
 #define ADV_INT_MAX_UNITS 240   /* 150 ms */
@@ -170,17 +172,26 @@ static void broadcast_weather_data(uint8_t flags, int32_t temp_centi, int32_t hu
     weather_ble_encode(mfg_data, flags, (int16_t)temp_centi, (uint16_t)hum_centi, battery_mv,
                        sequence);
 
-    err = bt_le_adv_start(adv_params, ad, ARRAY_SIZE(ad), NULL, 0);
-    if (err) {
-        LOG_E("Unable to start BLE advertising (err %d)", err);
-        return;
-    }
+    for (int repeat = 0; repeat < ADV_REPEAT_COUNT; repeat++) {
+        err = bt_le_adv_start(adv_params, ad, ARRAY_SIZE(ad), NULL, 0);
+        if (err) {
+            LOG_E("Unable to start BLE advertising (repeat %d/%d, err %d)",
+                  repeat + 1, ADV_REPEAT_COUNT, err);
+            return;
+        }
 
-    k_sleep(K_MSEC(ADV_DURATION_MS));
+        k_sleep(K_MSEC(ADV_BURST_DURATION_MS));
 
-    err = bt_le_adv_stop();
-    if (err) {
-        LOG_E("Unable to stop BLE advertising (err %d)", err);
+        err = bt_le_adv_stop();
+        if (err) {
+            LOG_E("Unable to stop BLE advertising (repeat %d/%d, err %d)",
+                  repeat + 1, ADV_REPEAT_COUNT, err);
+            return;
+        }
+
+        if ((repeat + 1) < ADV_REPEAT_COUNT) {
+            k_sleep(K_MSEC(ADV_REPEAT_GAP_MS));
+        }
     }
 }
 
@@ -192,14 +203,25 @@ static void broadcast_critical_battery_and_shutdown(uint16_t battery_mv, uint16_
     weather_ble_encode_error(mfg_data, WEATHER_BLE_ERROR_CRITICAL_LOW_BATEERY, battery_mv,
                              sequence);
 
-    err = bt_le_adv_start(adv_params, ad, ARRAY_SIZE(ad), NULL, 0);
-    if (err) {
-        LOG_E("Unable to start BLE error advertising (err %d)", err);
-    } else {
-        k_sleep(K_MSEC(ADV_DURATION_MS));
+    for (int repeat = 0; repeat < ADV_REPEAT_COUNT; repeat++) {
+        err = bt_le_adv_start(adv_params, ad, ARRAY_SIZE(ad), NULL, 0);
+        if (err) {
+            LOG_E("Unable to start BLE error advertising (repeat %d/%d, err %d)",
+                  repeat + 1, ADV_REPEAT_COUNT, err);
+            break;
+        }
+
+        k_sleep(K_MSEC(ADV_BURST_DURATION_MS));
+
         err = bt_le_adv_stop();
         if (err) {
-            LOG_E("Unable to stop BLE error advertising (err %d)", err);
+            LOG_E("Unable to stop BLE error advertising (repeat %d/%d, err %d)",
+                  repeat + 1, ADV_REPEAT_COUNT, err);
+            break;
+        }
+
+        if ((repeat + 1) < ADV_REPEAT_COUNT) {
+            k_sleep(K_MSEC(ADV_REPEAT_GAP_MS));
         }
     }
 
