@@ -2,6 +2,9 @@
 #include <kernel.h>
 #include <errno.h>
 
+#define LOG_MODULE AHT10
+#include "log.h"
+
 #define AHT10_CMD_CALIBRATE     0xE1
 #define AHT10_CMD_TRIGGER       0xAC
 #define AHT10_CMD_SOFTRESET     0xBA
@@ -24,6 +27,8 @@ int aht10_init(const struct i2c_dt_spec *i2c)
         return err;
     }
     k_sleep(K_MSEC(10));
+
+    LOG_D("AHT10 calibrated");
 
     return 0;
 }
