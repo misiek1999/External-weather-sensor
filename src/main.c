@@ -200,7 +200,7 @@ static void broadcast_critical_battery_and_shutdown(uint16_t battery_mv, uint16_
 {
     int err;
 
-    weather_ble_encode_error(mfg_data, WEATHER_BLE_ERROR_CRITICAL_LOW_BATEERY, battery_mv,
+    weather_ble_encode_error(mfg_data, WEATHER_BLE_ERROR_CRITICAL_LOW_BATTERY, battery_mv,
                              sequence);
 
     for (int repeat = 0; repeat < ADV_REPEAT_COUNT; repeat++) {
@@ -301,10 +301,12 @@ int main(void)
         int ret = aht10_init(&aht10);
         if (ret != 0) {
             LOG_E("AHT10 init error: %d", ret);
+            payload_flags |= WEATHER_BLE_INIT_SENSOR_FAILURE;
         } else {
             ret = aht10_read(&aht10, &temp_centi, &hum_centi);
             if (ret != 0) {
                 LOG_E("AHT10 read error: %d", ret);
+                payload_flags |= WEATHER_BLE_READ_SENSOR_FAILURE;
             } else {
                 payload_flags |= WEATHER_BLE_FLAG_SENSOR_OK;
                 print_fixed("Temp", temp_centi, "C");

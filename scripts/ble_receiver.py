@@ -25,7 +25,9 @@ COMPANY_ID = 0xFFFF
 MSG_TYPE_WEATHER = 0x01
 MSG_TYPE_ERROR = 0xEE
 FLAG_SENSOR_OK = 1 << 0
-ERROR_CRITICAL_LOW_BATEERY = 0x01
+ERROR_CRITICAL_LOW_BATTERY = 0x01
+ERROR_INIT_SENSOR_FAILURE = 0x02
+ERROR_READ_SENSOR_FAILURE = 0x04
 
 
 def parse_weather_data(data: bytes):
@@ -36,6 +38,8 @@ def parse_weather_data(data: bytes):
         if msg_type == MSG_TYPE_ERROR:
             error_name = {
                 ERROR_CRITICAL_LOW_BATEERY: "CRITICAL_LOW_BATEERY",
+                ERROR_INIT_SENSOR_FAILURE: "INIT_SENSOR_FAILURE",
+                ERROR_READ_SENSOR_FAILURE: "READ_SENSOR_FAILURE",
             }.get(flags, f"UNKNOWN_ERROR_{flags}")
             return {
                 "type": msg_type,
