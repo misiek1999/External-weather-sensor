@@ -9,12 +9,14 @@
 #define AHT10_CMD_TRIGGER       0xAC
 #define AHT10_CMD_SOFTRESET     0xBA
 #define AHT10_STATUS_BUSY       BIT(7)
+#define AHT10_STATUS_CALIBRATED BIT(3)
 
 int aht10_init(const struct i2c_dt_spec *i2c)
 {
     int err;
     uint8_t reset_cmd = AHT10_CMD_SOFTRESET;
     uint8_t calib_cmd[3] = { AHT10_CMD_CALIBRATE, 0x08, 0x00 };
+    uint8_t status;
 
     err = i2c_write_dt(i2c, &reset_cmd, 1);
     if (err) {
@@ -22,15 +24,32 @@ int aht10_init(const struct i2c_dt_spec *i2c)
     }
     k_sleep(K_MSEC(20));
 
+    err = i2c_read_dt(i2c, &status, 1);
+    if (err) {
+        return err;
+    }
+    if (status & AHT10_STATUS_CALIBRATED) {
+        return 0;
+    }
+
     err = i2c_write_dt(i2c, calib_cmd, sizeof(calib_cmd));
     if (err) {
         return err;
     }
-    k_sleep(K_MSEC(10));
 
-    LOG_D("AHT10 calibrated");
+    for (int i = 0; i < 10; i++) {
+        k_sleep(K_MSEC(10));
+        err = i2c_read_dt(i2c, &status, 1);
+        if (err) {
+            return err;
+        }
+        if (!(status & AHT10_STATUS_BUSY)) {
+            LOG_D("AHT10 calibrated");
+            return 0;
+        }
+    }
 
-    return 0;
+    return -ETIMEDOUT;
 }
 
 int aht10_read(const struct i2c_dt_spec *i2c, int32_t *temp_centi, int32_t *hum_centi)
