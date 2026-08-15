@@ -15,6 +15,17 @@
 #define WEATHER_BLE_INIT_SENSOR_FAILURE        0x02
 #define WEATHER_BLE_READ_SENSOR_FAILURE        0x04
 
+typedef enum {
+    UNKNOWN = 0,
+    OUTDOOR_1 = 1,
+    OUTDOOR_2 = 2,
+    OUTDOOR_3 = 3,
+    LIVING_ROOM = 4,
+    BEDROOM = 5,
+    KITCHEN = 6,
+    TOILET = 7,
+} sensor_location_t;
+
 /*
  * Frame format (Manufacturer Specific Data), all little-endian:
  *
@@ -24,9 +35,10 @@
  * Bytes 4-5 : temperature    (int16)   -> value * 100 (e.g. 2345 = 23.45 C)
  * Bytes 6-7 : humidity       (uint16)  -> value * 100 (e.g. 4567 = 45.67 %)
  * Bytes 8-9 : battery volt.  (uint16)  -> mV
- * Bytes 10-11 : sequence     (uint16)  -> increments once per fresh sample cycle
+ * Byte  10   : location      (uint8)   -> see sensor_location_t
+ * Bytes 11-12 : sequence     (uint16)  -> increments once per fresh sample cycle
  *
- * 12 bytes in total.
+ * 13 bytes in total.
  */
 struct weather_ble_payload {
     uint8_t  msg_type;
@@ -34,6 +46,7 @@ struct weather_ble_payload {
     int16_t  temperature_c;
     uint16_t humidity_pct;
     uint16_t battery_mv;
+    uint8_t  location;
     uint16_t sequence;
 } __packed;
 
@@ -44,6 +57,7 @@ static inline void weather_ble_encode(uint8_t *buf,
                                        int16_t temp_centi,
                                        uint16_t hum_centi,
                                        uint16_t battery_mv,
+                                       uint8_t location,
                                        uint16_t sequence)
 {
     struct weather_ble_payload payload = {
@@ -52,6 +66,7 @@ static inline void weather_ble_encode(uint8_t *buf,
         .temperature_c  = temp_centi,
         .humidity_pct   = hum_centi,
         .battery_mv     = battery_mv,
+        .location       = location,
         .sequence       = sequence,
     };
 
@@ -63,6 +78,7 @@ static inline void weather_ble_encode(uint8_t *buf,
 static inline void weather_ble_encode_error(uint8_t *buf,
                                              uint8_t error_code,
                                              uint16_t battery_mv,
+                                             uint8_t location,
                                              uint16_t sequence)
 {
     struct weather_ble_payload payload = {
@@ -71,6 +87,7 @@ static inline void weather_ble_encode_error(uint8_t *buf,
         .temperature_c  = 0,
         .humidity_pct   = 0,
         .battery_mv     = battery_mv,
+        .location       = location,
         .sequence       = sequence,
     };
 

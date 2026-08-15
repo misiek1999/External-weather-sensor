@@ -36,6 +36,9 @@
 static const struct gpio_dt_spec sensor_pwr =
     GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), sensor_pwr_gpios);
 
+/* Room id of this sensor, taken from the device tree (see app.overlay) */
+#define SENSOR_LOCATION DT_PROP(DT_PATH(zephyr_user), sensor_location)
+
 /* ---------- AHT10 na I2C ---------- */
 static const struct i2c_dt_spec aht10 = I2C_DT_SPEC_GET(DT_NODELABEL(aht10));
 
@@ -170,7 +173,7 @@ static void broadcast_weather_data(uint8_t flags, int32_t temp_centi, int32_t hu
     int err;
 
     weather_ble_encode(mfg_data, flags, (int16_t)temp_centi, (uint16_t)hum_centi, battery_mv,
-                       sequence);
+                       SENSOR_LOCATION, sequence);
 
     for (int repeat = 0; repeat < ADV_REPEAT_COUNT; repeat++) {
         err = bt_le_adv_start(adv_params, ad, ARRAY_SIZE(ad), NULL, 0);
@@ -201,7 +204,7 @@ static void broadcast_critical_battery_and_shutdown(uint16_t battery_mv, uint16_
     int err;
 
     weather_ble_encode_error(mfg_data, WEATHER_BLE_ERROR_CRITICAL_LOW_BATTERY, battery_mv,
-                             sequence);
+                             SENSOR_LOCATION, sequence);
 
     for (int repeat = 0; repeat < ADV_REPEAT_COUNT; repeat++) {
         err = bt_le_adv_start(adv_params, ad, ARRAY_SIZE(ad), NULL, 0);
@@ -242,6 +245,7 @@ int main(void)
     int err;
 
     LOG_I("External weather station start");
+    LOG_I("Sensor location id: %u", SENSOR_LOCATION);
 
     if (!device_is_ready(sensor_pwr.port)) {
         LOG_E("Power control pin not ready!");

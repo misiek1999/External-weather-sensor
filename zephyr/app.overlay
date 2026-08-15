@@ -21,5 +21,11 @@
 / {
     zephyr,user {
         sensor-pwr-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+        /* Room id broadcast by this sensor. Values match sensor_location_t
+         * in weather_proto.h:
+         *   0=UNKNOWN, 1=OUTDOOR_1, 2=OUTDOOR_2, 3=OUTDOOR_3,
+         *   4=LIVING_ROOM, 5=BEDROOM, 6=KITCHEN, 7=TOILET
+         */
+        sensor-location = <1>;
     };
 };

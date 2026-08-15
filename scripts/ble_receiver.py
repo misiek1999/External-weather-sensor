@@ -29,15 +29,61 @@ ERROR_CRITICAL_LOW_BATTERY = 0x01
 ERROR_INIT_SENSOR_FAILURE = 0x02
 ERROR_READ_SENSOR_FAILURE = 0x04
 
+LOCATION_NAMES = {
+    0: "UNKNOWN",
+    1: "OUTDOOR_1",
+    2: "OUTDOOR_2",
+    3: "OUTDOOR_3",
+    4: "LIVING_ROOM",
+    5: "BEDROOM",
+    6: "KITCHEN",
+    7: "TOILET",
+}
+
 
 def parse_weather_data(data: bytes):
-    # New payload (v3): <BBhHHH> -> msg_type, flags, temp, hum, batt, sequence
+    # Current payload (v4): <BBhHHBH> -> msg_type, flags, temp, hum, batt, location, sequence
+    if len(data) == struct.calcsize("<BBhHHBH"):
+        msg_type, flags, temp_centi, hum_centi, batt_mv, location, sequence = struct.unpack(
+            "<BBhHHBH", data
+        )
+
+        result = {
+            "type": msg_type,
+            "flags": flags,
+            "battery_mv": batt_mv,
+            "location": location,
+            "location_name": LOCATION_NAMES.get(location, f"UNKNOWN_{location}"),
+            "sequence": sequence,
+        }
+
+        if msg_type == MSG_TYPE_ERROR:
+            result["format"] = "v4-error"
+            result["error_code"] = flags
+            result["error_name"] = {
+                ERROR_CRITICAL_LOW_BATTERY: "CRITICAL_LOW_BATTERY",
+                ERROR_INIT_SENSOR_FAILURE: "INIT_SENSOR_FAILURE",
+                ERROR_READ_SENSOR_FAILURE: "READ_SENSOR_FAILURE",
+            }.get(flags, f"UNKNOWN_ERROR_{flags}")
+            return result
+
+        result.update(
+            {
+                "sensor_ok": bool(flags & FLAG_SENSOR_OK),
+                "temperature": temp_centi / 100.0,
+                "humidity": hum_centi / 100.0,
+                "format": "v4",
+            }
+        )
+        return result
+
+    # Older payload (v3): <BBhHHH> -> msg_type, flags, temp, hum, batt, sequence
     if len(data) == struct.calcsize("<BBhHHH"):
         msg_type, flags, temp_centi, hum_centi, batt_mv, sequence = struct.unpack("<BBhHHH", data)
 
         if msg_type == MSG_TYPE_ERROR:
             error_name = {
-                ERROR_CRITICAL_LOW_BATEERY: "CRITICAL_LOW_BATEERY",
+                ERROR_CRITICAL_LOW_BATTERY: "CRITICAL_LOW_BATTERY",
                 ERROR_INIT_SENSOR_FAILURE: "INIT_SENSOR_FAILURE",
                 ERROR_READ_SENSOR_FAILURE: "READ_SENSOR_FAILURE",
             }.get(flags, f"UNKNOWN_ERROR_{flags}")
