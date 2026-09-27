@@ -4,7 +4,7 @@
 #include <drivers/i2c.h>
 #include <stdint.h>
 
-/* Initialize + calibrate the sensor. Call after every VCC power-up. */
+/* Initialize the sensor at startup or after a communication failure. */
 int aht10_init(const struct i2c_dt_spec *i2c);
 
 /* Trigger a measurement and read the results.

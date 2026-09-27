@@ -1,5 +1,3 @@
-#include <dt-bindings/gpio/gpio.h>
-
 &uart0 {
     status = "okay";
     /delete-property/ hw-flow-control;
@@ -20,7 +18,6 @@
 
 / {
     zephyr,user {
-        sensor-pwr-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
         /* Room id broadcast by this sensor. Values match sensor_location_t
          * in weather_proto.h:
          *   0=UNKNOWN, 1=OUTDOOR_1, 2=OUTDOOR_2, 3=OUTDOOR_3,

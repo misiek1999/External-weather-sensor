@@ -26,7 +26,7 @@
 #define ADV_BURST_DURATION_MS 800
 #define ADV_REPEAT_COUNT      3
 #define ADV_REPEAT_GAP_MS     400
-#define SENSOR_WARMUP_MS  150
+#define SENSOR_READY_MS   40
 #define ADV_INT_MIN_UNITS 160   /* 100 ms */
 #define ADV_INT_MAX_UNITS 240   /* 150 ms */
 #define BATT_SAMPLE_EVERY_CYCLES 6
@@ -35,9 +35,10 @@
 #define BATT_18650_CRITICAL_MV 3000
 #endif
 
-/* ---------- Sensor power pin (VCC) ---------- */
-static const struct gpio_dt_spec sensor_pwr =
-    GPIO_DT_SPEC_GET(DT_PATH(zephyr_user), sensor_pwr_gpios);
+/* P0.13 controls EXT_VCC on nice!nano-compatible boards. Leaving it
+ * disconnected lets the board pull-up keep the 3.3 V rail enabled. */
+#define EXT_VCC_ENABLE_PIN 13
+static const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
 
 /* Room id of this sensor, taken from the device tree (see app.overlay) */
 #define SENSOR_LOCATION DT_PROP(DT_PATH(zephyr_user), sensor_location)
@@ -47,8 +48,8 @@ static const struct i2c_dt_spec aht10 = I2C_DT_SPEC_GET(DT_NODELABEL(aht10));
 
 /*
  * The nRF TWI driver keeps internal pull-ups on SDA/SCL while it is active.
- * They can feed an unpowered AHT10 module through its I/O protection or level
- * converter. Suspend TWI and disconnect both inputs before switching VCC off.
+ * Suspend TWI and leave SDA/SCL pulled high while the MCU sleeps. The sensor
+ * stays powered and returns to its own dormant state after a measurement.
  * Resuming TWI restores its I2C pin configuration.
  */
 static int sensor_bus_suspend(void)
@@ -59,12 +60,12 @@ static int sensor_bus_suspend(void)
         return err;
     }
 
-    err = gpio_pin_configure(sensor_pwr.port, SENSOR_SDA_PIN, GPIO_DISCONNECTED);
+    err = gpio_pin_configure(gpio0, SENSOR_SDA_PIN, GPIO_INPUT | GPIO_PULL_UP);
     if (err) {
         return err;
     }
 
-    return gpio_pin_configure(sensor_pwr.port, SENSOR_SCL_PIN, GPIO_DISCONNECTED);
+    return gpio_pin_configure(gpio0, SENSOR_SCL_PIN, GPIO_INPUT | GPIO_PULL_UP);
 }
 
 static int sensor_bus_resume(void)
@@ -72,18 +73,6 @@ static int sensor_bus_resume(void)
     int err = pm_device_state_set(aht10.bus, PM_DEVICE_STATE_ACTIVE);
 
     return err == -EALREADY ? 0 : err;
-}
-
-static int sensor_power_down(void)
-{
-    int err = sensor_bus_suspend();
-
-    if (err) {
-        /* Keep VCC on if the bus cannot be isolated from the sensor. */
-        return err;
-    }
-
-    return gpio_pin_set_dt(&sensor_pwr, 0);
 }
 
 /* ---------- ADC - battery voltage measurement ---------- */
@@ -291,8 +280,8 @@ int main(void)
     LOG_I("External weather station start");
     LOG_I("Sensor location id: %u", SENSOR_LOCATION);
 
-    if (!device_is_ready(sensor_pwr.port)) {
-        LOG_E("Power control pin not ready!");
+    if (!device_is_ready(gpio0)) {
+        LOG_E("GPIO0 not ready!");
         return -ENODEV;
     }
     if (!device_is_ready(aht10.bus)) {
@@ -300,23 +289,24 @@ int main(void)
         return -ENODEV;
     }
 
+    /* Never pull EXT_VCC low: on some clones that creates a ~0.65 mA path. */
+    err = gpio_pin_configure(gpio0, EXT_VCC_ENABLE_PIN, GPIO_DISCONNECTED);
+    if (err) {
+        LOG_E("EXT_VCC pin configuration error: %d", err);
+        return err;
+    }
+
     /* The UF2 bootloader may have used this LED; disconnect its input. */
-    err = gpio_pin_configure(sensor_pwr.port, STATUS_LED_PIN, GPIO_DISCONNECTED);
+    err = gpio_pin_configure(gpio0, STATUS_LED_PIN, GPIO_DISCONNECTED);
     if (err) {
         LOG_E("Status LED pin configuration error: %d", err);
         return err;
     }
 
-    /* TWI is initialized before main(); isolate SDA/SCL before cutting VCC. */
+    /* TWI is initialized before main(); isolate SDA/SCL until measurement. */
     err = sensor_bus_suspend();
     if (err) {
         LOG_E("Initial I2C suspend error: %d", err);
-        return err;
-    }
-
-    err = gpio_pin_configure_dt(&sensor_pwr, GPIO_OUTPUT_INACTIVE);
-    if (err) {
-        LOG_E("Sensor power pin configuration error: %d", err);
         return err;
     }
 
@@ -351,6 +341,7 @@ int main(void)
 
     uint16_t last_battery_mv = 0;
     uint32_t cycle_idx = 0;
+    bool aht10_initialized = false;
 
     while (1) {
         int32_t  temp_centi = 0;
@@ -358,41 +349,42 @@ int main(void)
         uint8_t  payload_flags = 0;
         uint16_t battery_mv;
 
-        /* Power first; only then let TWI pull SDA/SCL high. */
-        int ret = gpio_pin_set_dt(&sensor_pwr, 1);
+        int ret = sensor_bus_resume();
         if (ret) {
-            LOG_E("Sensor power-on error: %d", ret);
+            LOG_E("I2C resume error: %d", ret);
             payload_flags |= WEATHER_BLE_INIT_SENSOR_FAILURE;
         } else {
-            k_sleep(K_MSEC(SENSOR_WARMUP_MS));
-            ret = sensor_bus_resume();
-            if (ret) {
-                LOG_E("I2C resume error: %d", ret);
-                payload_flags |= WEATHER_BLE_INIT_SENSOR_FAILURE;
-            } else {
-                /* Initialize the AHT10 after each power cycle. */
+            if (!aht10_initialized) {
+                /* Allow a newly powered sensor to become ready. */
+                k_sleep(K_MSEC(SENSOR_READY_MS));
                 ret = aht10_init(&aht10);
                 if (ret) {
                     LOG_E("AHT10 init error: %d", ret);
-                    payload_flags |= WEATHER_BLE_INIT_SENSOR_FAILURE;
                 } else {
-                    ret = aht10_read(&aht10, &temp_centi, &hum_centi);
-                    if (ret) {
-                        LOG_E("AHT10 read error: %d", ret);
-                        payload_flags |= WEATHER_BLE_READ_SENSOR_FAILURE;
-                    } else {
-                        payload_flags |= WEATHER_BLE_FLAG_SENSOR_OK;
-                        print_fixed("Temp", temp_centi, "C");
-                        print_fixed("Humidity", hum_centi, "%");
-                    }
+                    aht10_initialized = true;
+                }
+            }
+
+            if (!aht10_initialized) {
+                payload_flags |= WEATHER_BLE_INIT_SENSOR_FAILURE;
+            } else {
+                ret = aht10_read(&aht10, &temp_centi, &hum_centi);
+                if (ret) {
+                    LOG_E("AHT10 read error: %d", ret);
+                    payload_flags |= WEATHER_BLE_READ_SENSOR_FAILURE;
+                    aht10_initialized = false;
+                } else {
+                    payload_flags |= WEATHER_BLE_FLAG_SENSOR_OK;
+                    print_fixed("Temp", temp_centi, "C");
+                    print_fixed("Humidity", hum_centi, "%");
                 }
             }
         }
 
-        /* Isolate the I2C lines before removing power from the module. */
-        ret = sensor_power_down();
+        /* A completed measurement leaves AHT10 dormant; suspend the I2C bus. */
+        ret = sensor_bus_suspend();
         if (ret) {
-            LOG_E("Sensor power-down/isolation error: %d", ret);
+            LOG_E("Sensor bus suspend error: %d", ret);
         }
 
         /* 4. Battery voltage */
